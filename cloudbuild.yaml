@@ -1,0 +1,117 @@
+# Cloud Build configuration for ADIT Questionnaire
+# This file is used by GCP Cloud Build to build and deploy the application
+
+substitutions:
+  _REGION: africa-south1
+  _BACKEND_SERVICE: adit-backend
+  _FRONTEND_SERVICE: adit-frontend
+  _DB_INSTANCE: adit-db
+  _DB_NAME: adit_questionnaire
+  _DB_USER: postgres
+
+steps:
+  # Step 1: Build Backend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_BACKEND_SERVICE}:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_BACKEND_SERVICE}:latest'
+      - '-f'
+      - 'backend/Dockerfile'
+      - 'backend'
+    id: 'build-backend'
+
+  # Step 2: Build Frontend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_FRONTEND_SERVICE}:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_FRONTEND_SERVICE}:latest'
+      - '-f'
+      - 'frontend/Dockerfile'
+      - 'frontend'
+    id: 'build-frontend'
+
+  # Step 3: Push Backend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_BACKEND_SERVICE}:$COMMIT_SHA'
+    id: 'push-backend'
+    waitFor: ['build-backend']
+
+  # Step 4: Push Backend latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_BACKEND_SERVICE}:latest'
+    waitFor: ['build-backend']
+
+  # Step 5: Push Frontend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_FRONTEND_SERVICE}:$COMMIT_SHA'
+    id: 'push-frontend'
+    waitFor: ['build-frontend']
+
+  # Step 6: Push Frontend latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_FRONTEND_SERVICE}:latest'
+    waitFor: ['build-frontend']
+
+  # Step 7: Deploy Backend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_BACKEND_SERVICE}'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_BACKEND_SERVICE}:$COMMIT_SHA'
+      - '--platform=managed'
+      - '--region=${_REGION}'
+      - '--allow-unauthenticated'
+      - '--add-cloudsql-instances=$PROJECT_ID:${_REGION}:${_DB_INSTANCE}'
+      - '--set-env-vars=NODE_ENV=production,DB_HOST=/cloudsql/$PROJECT_ID:${_REGION}:${_DB_INSTANCE},DB_NAME=${_DB_NAME},DB_USER=${_DB_USER},DB_PORT=5432,CORS_ORIGIN=*'
+      - '--set-secrets=DB_PASSWORD=adit-db-password:latest'
+      - '--memory=512Mi'
+      - '--cpu=1'
+      - '--min-instances=0'
+      - '--max-instances=10'
+    id: 'deploy-backend'
+    waitFor: ['push-backend']
+
+  # Step 8: Get Backend URL and Deploy Frontend
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        BACKEND_SVC_URL=$$(gcloud run services describe ${_BACKEND_SERVICE} --region=${_REGION} --format='value(status.url)')
+        gcloud run deploy ${_FRONTEND_SERVICE} \
+          --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_FRONTEND_SERVICE}:$COMMIT_SHA \
+          --platform=managed \
+          --region=${_REGION} \
+          --allow-unauthenticated \
+          --set-env-vars=BACKEND_URL=$$BACKEND_SVC_URL \
+          --memory=256Mi \
+          --cpu=1 \
+          --min-instances=0 \
+          --max-instances=10
+    id: 'deploy-frontend'
+    waitFor: ['push-frontend', 'deploy-backend']
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_BACKEND_SERVICE}:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_BACKEND_SERVICE}:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_FRONTEND_SERVICE}:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/adit-repo/${_FRONTEND_SERVICE}:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

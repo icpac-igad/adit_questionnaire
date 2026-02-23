@@ -1,0 +1,72 @@
+version: "3.8"
+
+services:
+  # PostgreSQL Database with PostGIS
+  postgres:
+    image: postgis/postgis:15-3.3-alpine
+    container_name: adit_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-adit_questionnaire}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password is required}
+    ports:
+      - "${DB_EXTERNAL_PORT:-3732}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - adit_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: adit_backend
+    working_dir: /app/src
+    command: node server.js
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3003
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-adit_questionnaire}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Database password is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+    ports:
+      - "${BACKEND_EXTERNAL_PORT:-3733}:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /app/node_modules
+    networks:
+      - adit_network
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: adit_frontend
+    ports:
+      - "${FRONTEND_EXTERNAL_PORT:-3734}:80"
+    depends_on:
+      - backend
+    networks:
+      - adit_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  adit_network:
+    driver: bridge
